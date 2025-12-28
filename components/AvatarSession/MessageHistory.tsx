@@ -1,0 +1,57 @@
+import React, { useEffect, useRef } from "react";
+
+interface Message {
+  id: string;
+  sender: string; // 'user' | 'avatar'
+  content: string;
+}
+
+interface MessageHistoryProps {
+  messages: Message[];
+}
+
+export const MessageHistory: React.FC<MessageHistoryProps> = ({ messages }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom
+  useEffect(() => {
+    if (containerRef.current) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+    }
+  }, [messages]);
+
+  if (messages.length === 0) {
+      return (
+          <div className="flex flex-col items-center justify-center h-full text-zinc-500 opacity-50">
+              <p>No messages yet.</p>
+          </div>
+      )
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      className="flex flex-col gap-4 w-full h-full overflow-y-auto"
+    >
+      {messages.map((msg) => (
+        <div
+          key={msg.id}
+          className={`flex flex-col max-w-[85%] ${
+            msg.sender === "user" ? "self-end items-end" : "self-start items-start"
+          }`}
+        >
+          <span className="text-xs text-zinc-500 mb-1 capitalize">{msg.sender}</span>
+          <div
+            className={`px-4 py-2 rounded-2xl text-sm ${
+              msg.sender === "user"
+                ? "bg-indigo-600 text-white rounded-br-none"
+                : "bg-zinc-800 text-zinc-200 rounded-bl-none border border-zinc-700"
+            }`}
+          >
+            {msg.content}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+};
