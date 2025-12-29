@@ -1,16 +1,10 @@
 import React, { useEffect, useRef } from "react";
+import { useStreamingAvatarContext } from "../logic/context"; // Context import kiya
 
-interface Message {
-  id: string;
-  sender: string; // 'user' | 'avatar'
-  content: string;
-}
-
-interface MessageHistoryProps {
-  messages: Message[];
-}
-
-export const MessageHistory: React.FC<MessageHistoryProps> = ({ messages }) => {
+export const MessageHistory: React.FC = () => {
+  // FIX: messages ko context se nikala instead of props
+  const { messages } = useStreamingAvatarContext(); 
+  
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom
@@ -20,7 +14,8 @@ export const MessageHistory: React.FC<MessageHistoryProps> = ({ messages }) => {
     }
   }, [messages]);
 
-  if (messages.length === 0) {
+  // Safe check for undefined messages
+  if (!messages || messages.length === 0) {
       return (
           <div className="flex flex-col items-center justify-center h-full text-zinc-500 opacity-50">
               <p>No messages yet.</p>

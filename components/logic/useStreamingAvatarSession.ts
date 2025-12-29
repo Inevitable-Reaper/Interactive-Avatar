@@ -78,8 +78,9 @@ export const useStreamingAvatarSession = () => {
 
   const start = useCallback(
     async (config: StartAvatarRequest, token?: string) => {
+      // FIX: Agar session pehle se active hai, toh error mat do, bas stop karke naya start karo
       if (sessionState !== StreamingAvatarSessionState.INACTIVE) {
-        throw new Error("There is already an active session");
+        await stop();
       }
 
       if (!avatarRef.current) {
@@ -89,8 +90,9 @@ export const useStreamingAvatarSession = () => {
         init(token);
       }
 
+      // Double check initialization
       if (!avatarRef.current) {
-        throw new Error("Avatar is not initialized");
+        init(token!); // Force init if missing
       }
 
       setSessionState(StreamingAvatarSessionState.CONNECTING);

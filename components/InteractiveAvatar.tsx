@@ -30,18 +30,18 @@ function InteractiveAvatarContent() {
   const [config, setConfig] = useState<StartAvatarRequest>({
     quality: AvatarQuality.Low,
     avatarName: AVATARS[0].avatar_id,
-    knowledgeId: undefined, 
+    knowledgeId: undefined, // Or "" if undefined throws error, but usually undefined is fine
     voice: {
       rate: 1.5,
-      emotion: VoiceEmotion.EXCITED,
+      // emotion: VoiceEmotion.EXCITED, // <--- IS LINE KO COMMENT KAR DO YA HATA DO
       model: ElevenLabsModel.eleven_flash_v2_5,
     },
-    language: "en",
+    language: "en", // Ye initial hai, jab tum Arabic select karoge to 'ar' jayega
     voiceChatTransport: VoiceChatTransport.WEBSOCKET,
     sttSettings: {
         provider: STTProvider.DEEPGRAM,
     },
-  });
+});
 
   const [text, setText] = useState("");
   const [chatMode, setChatMode] = useState("text_mode");
@@ -57,9 +57,22 @@ function InteractiveAvatarContent() {
   }
 
   const handleStartSession = useMemoizedFn(async () => {
-    const token = await fetchAccessToken();
-    // FIX: Token ko second argument ki tarah pass kiya
-    await startAvatar(config, token);
+    try {
+      // 1. Token lao
+      const token = await fetchAccessToken();
+      if (!token) {
+        alert("Access Token nahi mila! .env file check karo.");
+        return;
+      }
+
+      // 2. Avatar start karo
+      await startAvatar(config, token);
+      
+    } catch (error) {
+      console.error("Start Session Error:", error);
+      // Agar 400 error aaye, toh user ko batao
+      alert("Error starting session! Console (F12) check karo details ke liye.");
+    }
   });
 
   const handleEndSession = useMemoizedFn(async () => {
@@ -198,7 +211,7 @@ function InteractiveAvatarContent() {
 
 export default function InteractiveAvatar() {
   return (
-    <StreamingAvatarProvider basePath="/api"> 
+    <StreamingAvatarProvider basePath={process.env.NEXT_PUBLIC_BASE_API_URL}>
       <InteractiveAvatarContent />
     </StreamingAvatarProvider>
   );
