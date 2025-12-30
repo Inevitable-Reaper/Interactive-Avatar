@@ -1,218 +1,325 @@
 "use client";
 
-import {
+import type { StartAvatarResponse } from "@heygen/streaming-avatar";
+import StreamingAvatar, {
   AvatarQuality,
-  VoiceChatTransport,
-  VoiceEmotion,
-  StartAvatarRequest,
-  STTProvider,
-  ElevenLabsModel,
+  StreamingEvents,
+  TaskMode,
+  TaskType,
 } from "@heygen/streaming-avatar";
+import {
+  Button,
+  Spinner,
+  Tooltip,
+} from "@nextui-org/react";
 import { useEffect, useRef, useState } from "react";
-import { useMemoizedFn, useUnmount } from "ahooks";
-import { Button, Input, Tabs, Tab } from "@nextui-org/react";
+import { MicIcon, MicOffIcon, CloseIcon } from "./Icons";
 
-// Components
-import AvatarConfig from "./AvatarConfig";
-import { AvatarVideo } from "./AvatarSession/AvatarVideo";
-import { MessageHistory } from "./AvatarSession/MessageHistory"; 
-import { useStreamingAvatarSession } from "./logic/useStreamingAvatarSession";
-import { useVoiceChat } from "./logic/useVoiceChat";
-import { StreamingAvatarProvider, StreamingAvatarSessionState } from "./logic"; 
-import { AVATARS } from "@/app/lib/constants";
+const PlayIcon = ({ size = 24, fill = "currentColor", ...props }) => (
+  <svg 
+    width={size} 
+    height={size} 
+    viewBox="0 0 24 24" 
+    fill="none" 
+    xmlns="http://www.w3.org/2000/svg"
+    {...props}
+  >
+    <path d="M5 3L19 12L5 21V3Z" fill={fill} stroke={fill} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+  </svg>
+);
 
-function InteractiveAvatarContent() {
-  const { startAvatar, stopAvatar, sessionState, stream, isUserTalking } =
-    useStreamingAvatarSession();
+export default function InteractiveAvatar() {
+  const [isLoadingSession, setIsLoadingSession] = useState(false);
+  const [stream, setStream] = useState<MediaStream>();
+  const [data, setData] = useState<StartAvatarResponse>();
   
-  const { startVoiceChat, stopVoiceChat, isVoiceChatActive } = useVoiceChat();
-  
-  const [config, setConfig] = useState<StartAvatarRequest>({
-    quality: AvatarQuality.Low,
-    avatarName: AVATARS[0].avatar_id,
-    knowledgeId: undefined, // Or "" if undefined throws error, but usually undefined is fine
-    voice: {
-      rate: 1.5,
-      // emotion: VoiceEmotion.EXCITED, // <--- IS LINE KO COMMENT KAR DO YA HATA DO
-      model: ElevenLabsModel.eleven_flash_v2_5,
-    },
-    language: "en", // Ye initial hai, jab tum Arabic select karoge to 'ar' jayega
-    voiceChatTransport: VoiceChatTransport.WEBSOCKET,
-    sttSettings: {
-        provider: STTProvider.DEEPGRAM,
-    },
-});
+  const [language, setLanguage] = useState<string>("en"); 
 
-  const [text, setText] = useState("");
-  const [chatMode, setChatMode] = useState("text_mode");
+  const [isMicOn, setIsMicOn] = useState(false);
+  // FIX: Ref to track mic state immediately inside Event Listeners
+  const isMicOnRef = useRef(false); 
+
+  const [isAvatarTalking, setIsAvatarTalking] = useState(false);
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedAudioDeviceId, setSelectedAudioDeviceId] = useState<string>("");
+
+  const mediaStream = useRef<HTMLVideoElement>(null);
+  const avatar = useRef<StreamingAvatar | null>(null);
+  const recognition = useRef<any>(null); 
+
+  // 1. Sync Ref with State
+  useEffect(() => {
+    isMicOnRef.current = isMicOn;
+  }, [isMicOn]);
+
+  // 2. Initial Setup
+  useEffect(() => {
+    async function fetchAudioDevices() {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audioInputs = devices.filter(device => device.kind === 'audioinput');
+        setAudioDevices(audioInputs);
+        if (audioInputs.length > 0) {
+          setSelectedAudioDeviceId(audioInputs[0].deviceId);
+        }
+      } catch (error) {
+        console.error("Error fetching audio devices:", error);
+      }
+    }
+    fetchAudioDevices();
+  }, []);
+
+  // 3. Custom Brain Logic
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      
+      if (SpeechRecognition) {
+        recognition.current = new SpeechRecognition();
+        recognition.current.lang = 'ar-SA'; // Arabic listening
+        recognition.current.continuous = false;
+        recognition.current.interimResults = false;
+
+        recognition.current.onresult = async (event: any) => {
+          const transcript = event.results[0][0].transcript;
+          if (transcript && transcript.trim() !== "") {
+             console.log("User said:", transcript);
+             recognition.current.stop();
+             await handleBrainProcess(transcript);
+          }
+        };
+
+        recognition.current.onerror = (event: any) => {
+            console.error("Speech Recognition Error:", event.error);
+            // Don't turn off UI state, just stop internal engine if fatal
+            if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+                setIsMicOn(false);
+            }
+        };
+        
+        recognition.current.onend = () => {
+            // We rely on Avatar events to restart, 
+            // but if avatar never starts (error), we might get stuck.
+            // For now, let's trust the flow.
+        };
+      }
+    }
+  }, []);
+
+  async function handleBrainProcess(text: string) {
+    try {
+        const response = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text }),
+        });
+        
+        if (!response.ok) {
+            console.error("OpenAI API Error:", response.statusText);
+            // If error, restart mic so user can try again
+            if (isMicOnRef.current && recognition.current) {
+                try { recognition.current.start(); } catch(e) {}
+            }
+            return;
+        }
+
+        const data = await response.json();
+        const aiReply = data.reply;
+
+        if (aiReply && avatar.current) {
+            console.log("AI Reply (Arabic):", aiReply);
+            await avatar.current.speak({
+                text: aiReply,
+                taskType: TaskType.REPEAT, 
+                taskMode: TaskMode.SYNC 
+            });
+        } else {
+             // If no reply, restart mic
+             if (isMicOnRef.current && recognition.current) {
+                try { recognition.current.start(); } catch(e) {}
+            }
+        }
+    } catch (error) {
+        console.error("Error connecting to OpenAI brain:", error);
+        // Restart mic on error
+        if (isMicOnRef.current && recognition.current) {
+            try { recognition.current.start(); } catch(e) {}
+        }
+    }
+  }
 
   async function fetchAccessToken() {
     try {
-      const response = await fetch("/api/get-access-token", { method: "POST" });
+      const response = await fetch("/api/get-access-token", {
+        method: "POST",
+      });
+      if (!response.ok) throw new Error("Failed to fetch token");
       return await response.text();
     } catch (error) {
-      console.error("Error fetching token:", error);
+      console.error("Error fetching access token:", error);
       return "";
     }
   }
 
-  const handleStartSession = useMemoizedFn(async () => {
-    try {
-      // 1. Token lao
-      const token = await fetchAccessToken();
-      if (!token) {
-        alert("Access Token nahi mila! .env file check karo.");
+  async function startSession() {
+    setIsLoadingSession(true);
+    const newToken = await fetchAccessToken();
+
+    if (!newToken) {
+        setIsLoadingSession(false);
         return;
-      }
-
-      // 2. Avatar start karo
-      await startAvatar(config, token);
-      
-    } catch (error) {
-      console.error("Start Session Error:", error);
-      // Agar 400 error aaye, toh user ko batao
-      alert("Error starting session! Console (F12) check karo details ke liye.");
     }
-  });
 
-  const handleEndSession = useMemoizedFn(async () => {
-    await stopAvatar();
-  });
+    avatar.current = new StreamingAvatar({
+      token: newToken,
+    });
 
-  // Toggle Voice Chat properly
-  const handleVoiceToggle = () => {
-     if (isVoiceChatActive) {
-         stopVoiceChat();
-     } else {
-         startVoiceChat(); 
-     }
-  };
+    // --- EVENT LISTENERS (Now using Ref for Mic State) ---
+    
+    avatar.current.on(StreamingEvents.AVATAR_START_TALKING, () => {
+      setIsAvatarTalking(true);
+      // Ensure mic is stopped while avatar talks
+      if (recognition.current) recognition.current.stop(); 
+    });
 
-  // --- RENDER: SETTINGS PAGE ---
-  if (sessionState === StreamingAvatarSessionState.INACTIVE || !stream) {
-    return (
-      <div className="w-full h-screen flex items-center justify-center bg-black p-4 overflow-hidden">
-        <div className="w-full max-w-4xl h-[90vh] bg-zinc-900/50 rounded-2xl border border-zinc-800 shadow-2xl backdrop-blur-md overflow-hidden flex flex-col">
-           <div className="p-6 border-b border-zinc-800 shrink-0">
-             <h2 className="text-2xl font-bold text-white bg-gradient-to-r from-purple-400 to-pink-600 bg-clip-text text-transparent">
-               Avatar Settings
-             </h2>
-             <p className="text-zinc-400 text-sm mt-1">Configure your session settings.</p>
-           </div>
-           
-           {/* Scrollable Settings Area */}
-           <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
-              <AvatarConfig config={config} onConfigChange={setConfig} />
-           </div>
-           
-           <div className="p-6 border-t border-zinc-800 bg-zinc-900/80 shrink-0">
-             <Button
-                className="w-full bg-gradient-to-r from-indigo-500 to-purple-500 text-white font-semibold text-lg py-4 rounded-xl shadow-lg"
-                size="lg"
-                onPress={handleStartSession}
-                isLoading={sessionState === StreamingAvatarSessionState.STARTING}
-              >
-                Start Conversation
-              </Button>
-           </div>
-        </div>
-      </div>
-    );
+    avatar.current.on(StreamingEvents.AVATAR_STOP_TALKING, () => {
+      setIsAvatarTalking(false);
+      
+      // FIX: Check isMicOnRef.current instead of isMicOn variable
+      console.log("Avatar stopped. Mic state is:", isMicOnRef.current);
+      
+      if (isMicOnRef.current && recognition.current) {
+        setTimeout(() => {
+            try { 
+                recognition.current.start(); 
+                console.log("Mic restarted automatically.");
+            } catch(e) {
+                console.log("Mic already running or error:", e);
+            }
+        }, 200); // Small delay to avoid conflict
+      }
+    });
+
+    avatar.current.on(StreamingEvents.STREAM_DISCONNECTED, endSession);
+    avatar.current.on(StreamingEvents.STREAM_READY, (event) => setStream(event.detail));
+
+    try {
+      const res = await avatar.current.createStartAvatar({
+        quality: AvatarQuality.Low, 
+        avatarName: "Katya_Pink_Suit_public", 
+        disableIdleTimeout: true,
+      });
+
+      setData(res);
+      setIsLoadingSession(false);
+    } catch (error) {
+      console.error("Error starting avatar session:", error);
+      setIsLoadingSession(false);
+      alert("Failed to start avatar. Check console.");
+    }
   }
 
-  // --- RENDER: ACTIVE SESSION (75/25 SPLIT) ---
+  async function endSession() {
+    if (recognition.current) recognition.current.stop();
+    await avatar.current?.stopAvatar();
+    setStream(undefined);
+    setIsMicOn(false);
+  }
+
+  function toggleMic() {
+    if (!recognition.current) {
+        alert("Microphone not supported in this browser.");
+        return;
+    }
+
+    if (isMicOn) {
+      recognition.current.stop();
+      setIsMicOn(false);
+    } else {
+      try {
+        recognition.current.start();
+        setIsMicOn(true);
+      } catch (e) {
+        console.error("Could not start recognition:", e);
+      }
+    }
+  }
+
+  useEffect(() => {
+    if (stream && mediaStream.current) {
+      mediaStream.current.srcObject = stream;
+      mediaStream.current.onloadedmetadata = () => {
+        mediaStream.current!.play();
+      };
+    }
+  }, [stream]);
+
   return (
-    <div className="w-full h-screen flex flex-row bg-black overflow-hidden">
+    <div className="w-full h-screen bg-black overflow-hidden relative flex flex-col items-center justify-center">
+      
+      <div className="absolute inset-0 w-full h-full">
+        {stream ? (
+          <video
+            ref={mediaStream}
+            autoPlay
+            playsInline
+            className="w-full h-full object-cover"
+          >
+            <track kind="captions" />
+          </video>
+        ) : (
+          /* YAHAN CHANGE KIYA HAI: Image hata kar plain black background kar diya */
+          <div className="w-full h-full bg-black flex items-center justify-center">
+             <div className="text-white text-2xl font-bold">
+                {isLoadingSession ? "Initializing..." : "Ready"}
+             </div>
+          </div>
+        )}
+      </div>
+
+      <div className="absolute bottom-10 z-50 flex flex-col items-center gap-4 w-full px-4">
         
-        {/* LEFT: Video & Controls (75%) */}
-        <div className="w-3/4 h-full flex flex-col relative border-r border-zinc-800">
-             <div className="flex-1 w-full bg-black relative flex items-center justify-center overflow-hidden">
-                <AvatarVideo src={stream} />
-             </div>
-
-             {/* Controls Area (Fixed Height) */}
-             <div className="shrink-0 bg-zinc-900/90 border-t border-zinc-800 p-4">
-               <div className="max-w-4xl mx-auto flex flex-col gap-3">
-                  <div className="flex items-center justify-between gap-4">
-                      <div className="flex items-center gap-3">
-                        <Tabs 
-                          aria-label="Chat Mode" 
-                          selectedKey={chatMode} 
-                          onSelectionChange={(key) => setChatMode(key as string)}
-                          className="bg-zinc-800 rounded-lg p-1"
-                          size="sm"
-                        >
-                          <Tab key="text_mode" title="Text Chat" />
-                          <Tab key="voice_mode" title="Voice Chat" />
-                        </Tabs>
-                        <div className="w-[1px] h-6 bg-zinc-700 mx-1"></div>
-                        <Button 
-                           className="bg-red-500/10 text-red-500 border border-red-500/50"
-                           size="sm"
-                           variant="flat"
-                           onPress={() => window.location.reload()}
-                        >
-                           Interrupt
-                        </Button>
-                      </div>
-                      <Button 
-                        className="bg-zinc-800 text-zinc-400 hover:text-white"
-                        size="sm"
-                        variant="flat"
-                        onPress={handleEndSession}
-                      >
-                        End Session
-                      </Button>
-                  </div>
-
-                  {/* Input / Mic Toggle */}
-                  <div className="w-full mt-1 flex justify-center">
-                     {chatMode === "text_mode" ? (
-                        <div className="flex gap-2 w-full">
-                          <Input 
-                            placeholder="Type a message..." 
-                            value={text} 
-                            onValueChange={setText}
-                            className="flex-1"
-                            size="sm"
-                          />
-                          <Button className="bg-indigo-600 text-white" size="sm">Send</Button>
-                        </div>
-                     ) : (
-                        // TOGGLE MIC BUTTON
-                        <Button
-                          color={isVoiceChatActive ? "danger" : "primary"}
-                          variant={isVoiceChatActive ? "solid" : "flat"}
-                          size="lg"
-                          className="w-64 font-semibold shadow-lg"
-                          onPress={handleVoiceToggle}
-                        >
-                          {isVoiceChatActive ? "Stop Listening (Mic On)" : "Start Listening (Mic Off)"}
-                        </Button>
-                     )}
-                  </div>
-               </div>
-             </div>
-        </div>
-
-        {/* RIGHT: Transcript (25%) */}
-        <div className="w-1/4 h-full bg-zinc-950 flex flex-col border-l border-zinc-800">
-            <div className="p-4 border-b border-zinc-800 bg-zinc-900/50 shrink-0">
-               <h3 className="text-sm font-semibold text-white uppercase tracking-wider">Transcript</h3>
+        <div className="flex items-center justify-center gap-8 bg-black/40 backdrop-blur-md p-4 rounded-full border border-white/10 shadow-2xl">
+          
+          {!stream ? (
+            <Button
+              isIconOnly
+              className="w-16 h-16 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 text-white shadow-lg hover:scale-105 transition-transform"
+              onClick={startSession}
+              isLoading={isLoadingSession}
+            >
+              {!isLoadingSession && <PlayIcon size={32} fill="white" />}
+            </Button>
+          ) : (
+            <div className="flex items-center gap-2">
+                <Button
+                    isIconOnly
+                    className={`w-14 h-14 rounded-full transition-all ${
+                        isMicOn ? "bg-red-500 animate-pulse text-white" : "bg-white/20 text-white hover:bg-white/30"
+                    }`}
+                    onClick={toggleMic}
+                    isDisabled={isAvatarTalking} 
+                >
+                    {isMicOn ? <MicIcon size={24} /> : <MicOffIcon size={24} />}
+                </Button>
             </div>
-            {/* Transcript Area */}
-            <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-                <MessageHistory />
-            </div>
+          )}
+
+          <Button
+            isIconOnly
+            className={`w-14 h-14 rounded-full border-2 ${
+                stream 
+                ? "bg-red-500/20 border-red-500 text-red-500 hover:bg-red-500 hover:text-white cursor-pointer" 
+                : "bg-white/5 border-white/10 text-white/20 cursor-not-allowed"
+            }`}
+            onClick={endSession}
+            disabled={!stream}
+          >
+            <CloseIcon size={28} />
+          </Button>
+
         </div>
+      </div>
     </div>
-  );
-}
-
-export default function InteractiveAvatar() {
-  return (
-    <StreamingAvatarProvider basePath={process.env.NEXT_PUBLIC_BASE_API_URL}>
-      <InteractiveAvatarContent />
-    </StreamingAvatarProvider>
   );
 }
